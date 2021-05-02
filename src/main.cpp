@@ -3,6 +3,8 @@
 #include <ESP8266WiFi.h>
 #include <IRremoteESP8266.h>
 #include <IRsend.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_BME280.h>
 #include "stringToUint_64.h"
 #define ARDUINOJSON_USE_LONG_LONG 1
 #include <ArduinoJson.h>
@@ -12,24 +14,35 @@
 #define MQTT_SERVER "192.168.178.36"
 #define MQTT_PORT 1883
 #define CLIENT_NAME "ESP8266-LukasRoom"
-char *mqttTopic = "lukas-room/ir-esp";
-char *mqttResulstTopic = "lukas-room/ir-esp-result";
 
-DynamicJsonDocument doc(4096);
+//MQTT Topics/Channels
+#define mqttChannel "lukas-room"
+#define mqttTemperature mqttChannel"/ir-esp-sensor/temperature"
+#define mqttHumidity mqttChannel"/ir-esp-sensor/humidity"
+#define mqttPressure mqttChannel"/ir-esp-sensor/pressure"
+#define mqttAltitude mqttChannel"/ir-esp-sensor/altitude"
+#define mqttTopic mqttChannel"/ir-esp"
+#define mqttResulstTopic mqttChannel"/ir-esp-result"
 
 //PIN-Setup
-const int lightPin = 2;
-const uint16_t irSender = D2;
+const uint16_t irSender = D7;
 
-//Other Stuff
-WiFiClient wifiClient;
+//Functions
 void callback(char *topic, byte *payload, unsigned int length);
 void printWifiStatus();
 void reconnect();
 void wifiSetup();
+void sendSensorData();
 
+//Initialization
+WiFiClient wifiClient;
 PubSubClient client(wifiClient);
 IRsend irsend(irSender);
+DynamicJsonDocument doc(4096);
+Adafruit_BME280 bme;
+#define SEALEVELPRESSURE_HPA (1013.25)
+float temperature, humidity, pressure, altitude;
+unsigned long lastSend;
 
 void setup()
 {
@@ -41,9 +54,14 @@ void setup()
 
   //MQTT-Connection to Server
   client.setServer(MQTT_SERVER, MQTT_PORT);
+  client.setCallback(callback);
 
   //IR-Send
   irsend.begin();
+
+  //BME-Senor
+  bme.begin(0x76);
+  lastSend = 0;
 
   delay(2000);
 }
@@ -54,11 +72,27 @@ void loop()
   {
     reconnect();
   }
-
-  client.setCallback(callback);
   client.loop();
 
   delay(10);
+  //Send Sensor Data every minute
+  if (millis() - lastSend > 60000){
+    sendSensorData();
+    lastSend = millis();
+  }
+}
+
+void sendSensorData()
+{
+  temperature = bme.readTemperature();
+  humidity = bme.readHumidity();
+  pressure = bme.readPressure() / 100.0F;
+  altitude = bme.readAltitude(SEALEVELPRESSURE_HPA);
+  //Send Data via mqtt
+  client.publish(mqttTemperature, String(temperature).c_str(), true);
+  client.publish(mqttHumidity, String(humidity).c_str(), true);
+  client.publish(mqttPressure, String(pressure).c_str(), true);
+  client.publish(mqttAltitude, String(altitude).c_str(), true);
 }
 
 void callback(char *topic, byte *payload, unsigned int length)
@@ -114,7 +148,7 @@ void reconnect()
       delay(500);
       Serial.print(".");
     }
-  printWifiStatus();
+    printWifiStatus();
   }
   //wifi has to connected to succesfully connect to mqtt server
   if (WiFi.status() == WL_CONNECTED)
